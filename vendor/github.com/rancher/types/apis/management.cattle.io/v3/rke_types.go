@@ -4,6 +4,8 @@ import (
 	"github.com/rancher/norman/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiserverv1alpha1 "k8s.io/apiserver/pkg/apis/apiserver/v1alpha1"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
 type RancherKubernetesEngineConfig struct {
@@ -147,7 +149,7 @@ type RKESystemImages struct {
 	// Metrics Server image
 	MetricsServer string `yaml:"metrics_server" json:"metricsServer,omitempty"`
 	// Pod infra container image for Windows
-	WindowsPodInfraContainer string `yaml:"windows_pod_infra_container" json:"podInfraWindowsContainer,omitempty"`
+	WindowsPodInfraContainer string `yaml:"windows_pod_infra_container" json:"windowsPodInfraContainer,omitempty"`
 }
 
 type RKEConfigNode struct {
@@ -271,6 +273,26 @@ type KubeAPIService struct {
 	PodSecurityPolicy bool `yaml:"pod_security_policy" json:"podSecurityPolicy,omitempty"`
 	// Enable/Disable AlwaysPullImages admissions plugin
 	AlwaysPullImages bool `yaml:"always_pull_images" json:"alwaysPullImages,omitempty"`
+	// Audit Log Configuration
+	AuditLog *AuditLog `yaml:"audit_log" json:"auditLog,omitempty"`
+	// AdmissionConfiguration
+	AdmissionConfiguration *apiserverv1alpha1.AdmissionConfiguration `yaml:"admission_configuration" json:"admissionConfiguration,omitempty" norman:"type=map[json]"`
+	// EnableEventRateLimit for disabling when not needed
+	EnableEventRateLimit bool `yaml:"enable_event_rate_limit" json:"enableEventRateLimit,omitempty"`
+}
+
+type AuditLog struct {
+	Enable        bool            `yaml:"enable" json:"enable,omitempty"`
+	Configuration *AuditLogConfig `yaml:"configuration" json:"configuration,omitempty"`
+}
+
+type AuditLogConfig struct {
+	MaxAge    int             `yaml:"max_age" json:"maxAge,omitempty"`
+	MaxBackup int             `yaml:"max_backup" json:"maxBackup,omitempty"`
+	MaxSize   int             `yaml:"max_size" json:"maxSize,omitempty"`
+	Path      string          `yaml:"path" json:"path,omitempty"`
+	Format    string          `yaml:"format" json:"format,omitempty"`
+	Policy    *auditv1.Policy `yaml:"policy" json:"policy,omitempty"`
 }
 
 type KubeControllerService struct {
