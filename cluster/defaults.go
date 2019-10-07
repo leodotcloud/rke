@@ -2,20 +2,25 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/rancher/rke/metadata"
 
 	"github.com/rancher/rke/cloudprovider"
 	"github.com/rancher/rke/docker"
 	"github.com/rancher/rke/k8s"
 	"github.com/rancher/rke/log"
+	"github.com/rancher/rke/metadata"
 	"github.com/rancher/rke/services"
 	"github.com/rancher/rke/templates"
 	"github.com/rancher/rke/util"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	apiserverv1alpha1 "k8s.io/apiserver/pkg/apis/apiserver/v1alpha1"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+	eventratelimitv1alpha1 "k8s.io/kubernetes/plugin/pkg/admission/eventratelimit/apis/eventratelimit/v1alpha1"
 )
 
 const (
@@ -58,6 +63,20 @@ const (
 	DefaultFlannelBackendVxLan     = "vxlan"
 	DefaultFlannelBackendVxLanPort = "8472"
 	DefaultFlannelBackendVxLanVNI  = "1"
+
+	KubeAPIArgAdmissionControlConfigFile             = "admission-control-config-file"
+	DefaultKubeAPIArgAdmissionControlConfigFileValue = "/etc/kubernetes/admission.yaml"
+
+	EventRateLimitPluginName = "EventRateLimit"
+
+	KubeAPIArgAuditLogPath                = "audit-log-path"
+	KubeAPIArgAuditLogMaxAge              = "audit-log-maxage"
+	KubeAPIArgAuditLogMaxBackup           = "audit-log-maxbackup"
+	KubeAPIArgAuditLogMaxSize             = "audit-log-maxsize"
+	KubeAPIArgAuditLogFormat              = "audit-log-format"
+	KubeAPIArgAuditPolicyFile             = "audit-policy-file"
+	DefaultKubeAPIArgAuditLogPathValue    = "/var/log/kube-audit/audit-log.json"
+	DefaultKubeAPIArgAuditPolicyFileValue = "/etc/kubernetes/audit.yaml"
 )
 
 type ExternalFlags struct {
@@ -224,6 +243,116 @@ func (c *Cluster) setClusterServicesDefaults() {
 			c.Services.Etcd.BackupConfig.Retention = DefaultEtcdBackupConfigRetention
 		}
 	}
+
+	if _, ok := c.Services.KubeAPI.ExtraArgs[KubeAPIArgAdmissionControlConfigFile]; !ok {
+		if c.Services.KubeAPI.EnableEventRateLimit {
+			if c.Services.KubeAPI.AdmissionConfiguration == nil {
+				admissionConfig, err := newDefaultAdmissionConfiguration()
+				if err != nil {
+					logrus.Errorf("error getting default admission configuration: %v", err)
+				}
+				c.Services.KubeAPI.AdmissionConfiguration = admissionConfig
+			} else {
+				found := false
+				plugins := c.Services.KubeAPI.AdmissionConfiguration.Plugins
+				for _, plugin := range plugins {
+					if plugin.Name == EventRateLimitPluginName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					p, err := newDefaultEventRateLimitPlugin()
+					if err != nil {
+						logrus.Errorf("error getting default eventratelimit config: %v", err)
+					}
+					c.Services.KubeAPI.AdmissionConfiguration.Plugins = append(plugins, p)
+				}
+			}
+		}
+	}
+
+	if c.Services.KubeAPI.AuditLog != nil &&
+		c.Services.KubeAPI.AuditLog.Enable &&
+		c.Services.KubeAPI.AuditLog.Configuration == nil {
+		alc := newDefaultAuditLogConfig()
+		c.Services.KubeAPI.AuditLog.Configuration = alc
+	}
+}
+
+func newDefaultAuditPolicy() *auditv1.Policy {
+	p := &auditv1.Policy{
+		TypeMeta: v1.TypeMeta{
+			Kind:       "Policy",
+			APIVersion: auditv1.SchemeGroupVersion.String(),
+		},
+		Rules: []auditv1.PolicyRule{
+			{
+				Level: "Metadata",
+			},
+		},
+		OmitStages: nil,
+	}
+	return p
+}
+
+func newDefaultAuditLogConfig() *v3.AuditLogConfig {
+	p := newDefaultAuditPolicy()
+	c := &v3.AuditLogConfig{
+		MaxAge:    5,
+		MaxBackup: 5,
+		MaxSize:   100,
+		Path:      DefaultKubeAPIArgAuditLogPathValue,
+		Format:    "json",
+		Policy:    p,
+	}
+	return c
+}
+
+func newDefaultEventRateLimitPlugin() (apiserverv1alpha1.AdmissionPluginConfiguration, error) {
+	plugin := apiserverv1alpha1.AdmissionPluginConfiguration{
+		Name: EventRateLimitPluginName,
+		Configuration: &runtime.Unknown{
+			ContentType: "application/json",
+		},
+	}
+
+	c := &eventratelimitv1alpha1.Configuration{
+		TypeMeta: v1.TypeMeta{
+			Kind:       "Configuration",
+			APIVersion: eventratelimitv1alpha1.SchemeGroupVersion.String(),
+		},
+		Limits: []eventratelimitv1alpha1.Limit{
+			{
+				Type:  eventratelimitv1alpha1.ServerLimitType,
+				QPS:   5000,
+				Burst: 20000,
+			},
+		},
+	}
+	cBytes, err := json.Marshal(c)
+	if err != nil {
+		return plugin, fmt.Errorf("error marshalling eventratelimit config: %v", err)
+	}
+	plugin.Configuration.Raw = cBytes
+
+	return plugin, nil
+}
+
+func newDefaultAdmissionConfiguration() (*apiserverv1alpha1.AdmissionConfiguration, error) {
+	var admissionConfiguration *apiserverv1alpha1.AdmissionConfiguration
+	plugin, err := newDefaultEventRateLimitPlugin()
+	if err != nil {
+		return admissionConfiguration, fmt.Errorf("error getting default eventratelimit plugin: %v", err)
+	}
+	admissionConfiguration = &apiserverv1alpha1.AdmissionConfiguration{
+		TypeMeta: v1.TypeMeta{
+			Kind:       "AdmissionConfiguration",
+			APIVersion: apiserverv1alpha1.SchemeGroupVersion.String(),
+		},
+		Plugins: []apiserverv1alpha1.AdmissionPluginConfiguration{plugin},
+	}
+	return admissionConfiguration, nil
 }
 
 func (c *Cluster) setClusterImageDefaults() error {

@@ -1,10 +1,9 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"strings"
-
-	"context"
 
 	"github.com/docker/docker/api/types"
 	"github.com/rancher/rke/hosts"
@@ -15,6 +14,7 @@ import (
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -156,6 +156,34 @@ func (c *Cluster) SetUpHosts(ctx context.Context, flags ExternalFlags) error {
 				return err
 			}
 			log.Infof(ctx, "[%s] Successfully deployed authentication webhook config Cluster nodes", authnWebhookFileName)
+		}
+
+		if _, ok := c.Services.KubeAPI.ExtraArgs[KubeAPIArgAdmissionControlConfigFile]; !ok {
+			if c.Services.KubeAPI.EnableEventRateLimit {
+				controlPlaneHosts := hosts.GetUniqueHostList(nil, c.ControlPlaneHosts, nil)
+				bytes, err := yaml.Marshal(c.Services.KubeAPI.AdmissionConfiguration)
+				if err != nil {
+					return err
+				}
+				if err := deployFile(ctx, controlPlaneHosts, c.SystemImages.Alpine, c.PrivateRegistriesMap, DefaultKubeAPIArgAdmissionControlConfigFileValue, string(bytes)); err != nil {
+					return err
+				}
+				log.Infof(ctx, "[%s] Successfully deployed admission control config to Cluster control nodes", DefaultKubeAPIArgAdmissionControlConfigFileValue)
+			}
+		}
+
+		if _, ok := c.Services.KubeAPI.ExtraArgs[KubeAPIArgAuditPolicyFile]; !ok {
+			if c.Services.KubeAPI.AuditLog != nil && c.Services.KubeAPI.AuditLog.Enable {
+				controlPlaneHosts := hosts.GetUniqueHostList(nil, c.ControlPlaneHosts, nil)
+				bytes, err := yaml.Marshal(c.Services.KubeAPI.AuditLog.Configuration.Policy)
+				if err != nil {
+					return err
+				}
+				if err := deployFile(ctx, controlPlaneHosts, c.SystemImages.Alpine, c.PrivateRegistriesMap, DefaultKubeAPIArgAuditPolicyFileValue, string(bytes)); err != nil {
+					return err
+				}
+				log.Infof(ctx, "[%s] Successfully deployed audit policy file to Cluster control nodes", DefaultKubeAPIArgAuditPolicyFileValue)
+			}
 		}
 	}
 	return nil

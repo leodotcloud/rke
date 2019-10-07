@@ -19,7 +19,7 @@ import (
 	"github.com/rancher/rke/pki"
 	"github.com/rancher/rke/services"
 	"github.com/rancher/rke/util"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -248,11 +248,25 @@ func (c *Cluster) BuildKubeAPIProcess(host *hosts.Host, prefixPath string, svcOp
 		}
 	}
 
+	if c.Services.KubeAPI.AuditLog != nil {
+		if alc := c.Services.KubeAPI.AuditLog.Configuration; alc != nil {
+			CommandArgs[KubeAPIArgAuditLogPath] = alc.Path
+			CommandArgs[KubeAPIArgAuditLogMaxAge] = strconv.Itoa(alc.MaxAge)
+			CommandArgs[KubeAPIArgAuditLogMaxBackup] = strconv.Itoa(alc.MaxBackup)
+			CommandArgs[KubeAPIArgAuditLogMaxSize] = strconv.Itoa(alc.MaxSize)
+			CommandArgs[KubeAPIArgAuditLogFormat] = alc.Format
+			CommandArgs[KubeAPIArgAuditPolicyFile] = DefaultKubeAPIArgAuditPolicyFileValue
+		}
+	}
+
 	VolumesFrom := []string{
 		services.SidekickContainerName,
 	}
 	Binds := []string{
 		fmt.Sprintf("%s:/etc/kubernetes:z", path.Join(prefixPath, "/etc/kubernetes")),
+	}
+	if c.Services.KubeAPI.AuditLog != nil && c.Services.KubeAPI.AuditLog.Enable {
+		Binds = append(Binds, fmt.Sprintf("%s:/var/log/kube-audit:z", path.Join(prefixPath, "/var/log/kube-audit")))
 	}
 
 	// Override args if they exist, add additional args
