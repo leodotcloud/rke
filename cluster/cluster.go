@@ -9,6 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apiserver/pkg/apis/config"
+	apiserverconfig "k8s.io/apiserver/pkg/apis/config"
+	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/config/v1"
+
 	"github.com/docker/docker/api/types"
 	ghodssyaml "github.com/ghodss/yaml"
 	"github.com/rancher/rke/authz"
@@ -187,12 +191,74 @@ func parseAdmissionConfig(clusterFile string, rkeConfig *v3.RancherKubernetesEng
 	return err
 }
 
+func parseCustomConfig(customConfig map[string]interface{}) (*apiserverconfig.EncryptionConfiguration, error) {
+	var err error
+
+	data, err := json.Marshal(customConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling: %v", err)
+	}
+
+	scheme := runtime.NewScheme()
+	err = apiserverconfig.AddToScheme(scheme)
+	if err != nil {
+		return nil, fmt.Errorf("error adding to scheme: %v", err)
+	}
+	err = apiserverconfigv1.AddToScheme(scheme)
+	if err != nil {
+		return nil, fmt.Errorf("error adding to scheme: %v", err)
+	}
+	codecs := serializer.NewCodecFactory(scheme)
+	decoder := codecs.UniversalDecoder()
+	decodedObj, objType, err := decoder.Decode(data, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error decoding data: %v", err)
+	}
+	decodedConfig, ok := decodedObj.(*apiserverconfig.EncryptionConfiguration)
+	if !ok {
+		return nil, fmt.Errorf("unexpected type: %T", objType)
+	}
+	return decodedConfig, nil
+}
+
+func before(clusterFile string) (string, *config.EncryptionConfiguration, error) {
+	var err error
+	var r map[string]interface{}
+	err = ghodssyaml.Unmarshal([]byte(clusterFile), &r)
+	if err != nil {
+		return clusterFile, nil, fmt.Errorf("error unmarshalling: %v", err)
+	}
+	services := r["services"].(map[string]interface{})
+	kubeapi := services["kube-api"].(map[string]interface{})
+	secrets_encryption_config := kubeapi["secrets_encryption_config"].(map[string]interface{})
+	custom_config := secrets_encryption_config["custom_config"].(map[string]interface{})
+
+	if custom_config != nil {
+		logrus.Infof("custom_config: %+v", custom_config)
+		delete(secrets_encryption_config, "custom_config")
+		newClusterFile, err := ghodssyaml.Marshal(r)
+		logrus.Infof("newClusterFile: %+v", string(newClusterFile))
+		c, _ := parseCustomConfig(custom_config)
+		return string(newClusterFile), c, err
+	}
+
+	return clusterFile, nil, nil
+}
+
 func ParseConfig(clusterFile string) (*v3.RancherKubernetesEngineConfig, error) {
 	logrus.Debugf("Parsing cluster file [%v]", clusterFile)
 	var rkeConfig v3.RancherKubernetesEngineConfig
+
+	clusterFile, secretConfig, _ := before(clusterFile)
+
 	if err := yaml.Unmarshal([]byte(clusterFile), &rkeConfig); err != nil {
 		return nil, err
 	}
+
+	if rkeConfig.Services.KubeAPI.SecretsEncryptionConfig.Enabled && secretConfig != nil {
+		rkeConfig.Services.KubeAPI.SecretsEncryptionConfig.CustomConfig = secretConfig
+	}
+
 	if err := parseAdmissionConfig(clusterFile, &rkeConfig); err != nil {
 		return &rkeConfig, fmt.Errorf("error parsing admission config: %v", err)
 	}
